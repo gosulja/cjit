@@ -43,6 +43,7 @@ let loop_test = Program::new(vec![
 ```
 
 # Examples Results
+```
 [Example 1] 100 + 200
 [Example 1] Result: 300
 [Example 2] (10 + 5) * 3 - 2
@@ -62,3 +63,4 @@ let loop_test = Program::new(vec![
 [Example 7] Result: 1
 [Example 8] Loop from 0 to 10
 [Example 8] Result: 10
+```
