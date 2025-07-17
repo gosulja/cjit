@@ -16,6 +16,11 @@ use std::ptr;
 use std::collections::HashMap;
 
 /*
+    Define where the exit position is in the bytecode.
+*/
+const EXIT_LABEL: u32 = u32::MAX;
+
+/*
     Updated Instruction set
 */
 #[derive(Debug, Clone)]
@@ -213,10 +218,9 @@ impl Compiler {
         Push the result
     */
     fn emit_cmp(&mut self, op: &str) {
-        self.emit(&[0x5B]);             /* pop rbx  ;   second */
-        self.emit(&[0x58]);             /* pop rax  ;   first */
+        self.emit(&[0x5B]);             /* pop rbx  ; second operand */
+        self.emit(&[0x58]);             /* pop rax  ; first operand */
         self.emit(&[0x48,0x39,0xD8]);   /* cmp rax, rbx */
-        self.emit(&[0x48,0x31,0xC0]);   /* xor rax, rax     ; clear */
 
         match op {
             "eq"  => self.emit(&[0x0F,0x94,0xC0]),   /* sete al */
@@ -227,6 +231,11 @@ impl Compiler {
             "gte" => self.emit(&[0x0F,0x9D,0xC0]),   /* setge al */
             _ => panic!("unknown cmp op: {}", op),
         }
+
+        /*
+            Zero extend the result from al into rax
+         */
+        self.emit(&[0x48, 0x0F, 0xB6, 0xC0]); /* movzx rax, al */
 
         self.emit(&[0x50]);             /* push rax */
         self.stk_offset -= 8;
@@ -242,16 +251,15 @@ impl Compiler {
         match op {
             "bnot" => self.emit(&[0x48,0xF7,0xD0]),   /* not rax */
             "neg"  => self.emit(&[0x48,0xF7,0xD8]),   /* neg rax */
-            "ne"  => {
+            "not"  => {
                 self.emit(&[0x48,0x85,0xC0]);         /* test rax, rax */
-                self.emit(&[0x48,0x31,0xC0]);         /* xor rax, rax */
                 self.emit(&[0x0F,0x94,0xC0]);         /* sete al */
+                self.emit(&[0x48, 0x0F, 0xB6, 0xC0]); /* movzx rax, al */
             }
-            _ => panic!("unknown cmp op: {}", op),
+            _ => panic!("unknown unary op: {}", op),
         }
 
         self.emit(&[0x50]);             /* push rax */
-        self.stk_offset -= 8;
     }
 
     /*
@@ -347,20 +355,12 @@ impl Compiler {
 
     pub fn compile(&mut self, program: &Program) -> Vec<u8> {
         self.bytecode.clear();
+        self.stk_offset = 0;
+        self.labels.clear();
+        self.label_patches.clear();
+
         self.emit_fn_prologue();
 
-        /*
-            Initially, collect labels.
-        */
-        for (_, inst) in program.insts.iter().enumerate() {
-            if let Instruction::Label(id) = inst {
-                self.labels.insert(*id, self.bytecode.len());
-            }
-        }
-
-        /*
-            After, compile instructions
-        */
         for i in &program.insts {
             match i {
                 Instruction::Load(v) => self.emit_load_imm(*v),
@@ -376,9 +376,9 @@ impl Compiler {
                 Instruction::Eq => self.emit_cmp("eq"),
                 Instruction::Ne => self.emit_cmp("ne"),
                 Instruction::Lt => self.emit_cmp("lt"),
-                Instruction::Lte => self.emit_cmp("le"),
+                Instruction::Lte => self.emit_cmp("lte"),
                 Instruction::Gt => self.emit_cmp("gt"),
-                Instruction::Gte => self.emit_cmp("ge"),
+                Instruction::Gte => self.emit_cmp("gte"),
                 Instruction::And => self.emit_binop("and"),
                 Instruction::Or => self.emit_binop("or"),
                 Instruction::Not => self.emit_unary("not"),
@@ -393,24 +393,27 @@ impl Compiler {
                 Instruction::Jmp(label) => self.emit_jmp(*label, None),
                 Instruction::JmpIf(label) => self.emit_jmp(*label, Some(true)),
                 Instruction::JmpIfNot(label) => self.emit_jmp(*label, Some(false)),
-                Instruction::Label(_) => {},
+                Instruction::Label(id) => {
+                    assert!(*id != EXIT_LABEL, "label id {} is reserved.", EXIT_LABEL);
+                    self.labels.insert(*id, self.bytecode.len());
+                },
                 Instruction::Write => self.emit_write(),
                 Instruction::WriteChar => self.emit_write(),
                 Instruction::Read => {},
                 Instruction::Call(_) => {},
                 Instruction::Ret => {
-                    self.emit(&[0x58]); /* pop rax */
-                    break;
+                    self.emit(&[0x58]);
+                    self.emit_jmp(EXIT_LABEL, None);
                 }
                 Instruction::Halt => break,
             }
         }
 
-        self.patch_jumps();
+        self.labels.insert(EXIT_LABEL, self.bytecode.len());    /* Insert the exit label */
         self.emit_fn_epilogue();
+        self.patch_jumps();
         self.bytecode.clone()
     }
-
 }
 
 /*
