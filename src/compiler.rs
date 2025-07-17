@@ -4,7 +4,7 @@ use libc;
 #[cfg(windows)]
 use winapi::um::{
     memoryapi::{VirtualAlloc, VirtualFree, VirtualProtect},
-    winnt::{MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE, PAGE_EXECUTE_READ},
+    winnt::{MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, PAGE_EXECUTE_READ},
 };
 
 #[cfg(windows)]
