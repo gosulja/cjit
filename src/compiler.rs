@@ -1,9 +1,19 @@
-use std::mem;
-use std::collections::HashMap;
+#[cfg(unix)]
+use libc;
 
-/*
-    Targeting x86-64
-*/
+#[cfg(windows)]
+use winapi::um::{
+    memoryapi::{VirtualAlloc, VirtualFree, VirtualProtect},
+    winnt::{MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE, PAGE_EXECUTE_READ},
+};
+
+#[cfg(windows)]
+use winapi::shared::minwindef::DWORD;
+
+#[cfg(windows)]
+use std::ptr;
+
+use std::collections::HashMap;
 
 /*
     Updated Instruction set
@@ -342,7 +352,7 @@ impl Compiler {
         /*
             Initially, collect labels.
         */
-        for (i, inst) in program.insts.iter().enumerate() {
+        for (_, inst) in program.insts.iter().enumerate() {
             if let Instruction::Label(id) = inst {
                 self.labels.insert(*id, self.bytecode.len());
             }
@@ -419,53 +429,114 @@ impl Invoker {
     pub fn execute(&mut self, code: &[u8]) -> i64 {
         unsafe {
             /*
-                Allocate memory which is executable
+                Execute the code for UNIX systems.
             */
-            let psize = 4096;       /* Page size */
-            let csize = (code.len() + psize - 1) & !(psize - 1);    /* Calculate the size of the generate code */
+            #[cfg(unix)]
+            {
+                /*
+                    Allocate memory which is executable
+                */
+                let psize = 4096;       /* Page size */
+                let csize = (code.len() + psize - 1) & !(psize - 1);    /* Calculate the size of the generate code */
 
-            /*
-                Pointer to the allocated memory
-            */
-            let p = libc::mmap(
-                std::ptr::null_mut(),
-                csize,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0
-            );
+                /*
+                    Pointer to the allocated memory
+                */
+                let p = libc::mmap(
+                    std::ptr::null_mut(),
+                    csize,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    -1,
+                    0
+                );
 
-            if p == libc::MAP_FAILED {
-                panic!("failed to allocate memory for Invoker.");
+                if p == libc::MAP_FAILED {
+                    panic!("failed to allocate memory for Invoker.");
+                }
+
+                /*
+                    Then copy the code to memory whichi is executable
+                */
+                std::ptr::copy_nonoverlapping(code.as_ptr(), p as *mut u8, code.len());
+
+                /*
+                    And then obviously, make it executable.
+                */
+                if libc::mprotect(p, csize, libc::PROT_READ | libc::PROT_EXEC) != 0 {
+                    panic!("failed to make memory executable for Invoker.");
+                }
+
+                /*
+                    Cast the function pointer from the executable memory
+                    and then, at last, execute.
+                */
+                let f: extern "C" fn() -> i64 = std::mem::transmute(p);
+                let ret = f();
+
+                /*
+                    Cleanup allocated memory
+                */
+                libc::munmap(p, csize);
+
+                /* Return the result of the executed function */
+                ret
             }
 
             /*
-                Then copy the code to memory whichi is executable
+                Execute the code for Windows systems.
             */
-            std::ptr::copy_nonoverlapping(code.as_ptr(), p as *mut u8, code.len());
+            #[cfg(windows)]
+            {
+                /*
+                    Allocate memory which is executable
+                */
+                let psize = 4096;       /* Page size */
+                let csize = (code.len() + psize - 1) & !(psize - 1);    /* Calculate the size of the generate code */
 
-            /*
-                And then obviously, make it executable.
-            */
-            if libc::mprotect(p, csize, libc::PROT_READ | libc::PROT_EXEC) != 0 {
-                panic!("failed to make memory executable for Invoker.");
+                /*
+                    Pointer to the allocated memory
+                */
+                let p = VirtualAlloc(
+                    ptr::null_mut(),
+                    csize,
+                    MEM_COMMIT | MEM_RESERVE,
+                    PAGE_READWRITE
+                );
+
+                if p.is_null() {
+                    panic!("failed to allocate memory for Invoker.");
+                }
+
+                /*
+                    Then copy the code to memory whichi is executable
+                */
+                std::ptr::copy_nonoverlapping(code.as_ptr(), p as *mut u8, code.len());
+
+                /*
+                    And then obviously, make it executable.
+                */
+                let mut old: DWORD = 0;
+                if VirtualProtect(p, csize, PAGE_EXECUTE_READ, &mut old) == 0 {
+                    VirtualFree(p, 0, MEM_RELEASE);
+                    panic!("failed to make memory executable for Invoker.");
+                }
+
+                /*
+                    Cast the function pointer from the executable memory
+                    and then, at last, execute.
+                */
+                let f: extern "C" fn() -> i64 = std::mem::transmute(p);
+                let ret = f();
+
+                /*
+                    Cleanup allocated memory
+                */
+                VirtualFree(p, 0, MEM_RELEASE);
+
+                /* Return the result of the executed function */
+                ret
             }
-
-            /*
-                Cast the function pointer from the executable memory
-                and then, at last, execute.
-            */
-            let f: extern "C" fn() -> i64 = std::mem::transmute(p);
-            let ret = f();
-
-            /*
-                Cleanup allocated memory
-            */
-            libc::munmap(p, csize);
-
-            /* Return the result of the executed function */
-            ret
         }
     }
 }
